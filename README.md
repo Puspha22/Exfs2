@@ -1,21 +1,21 @@
 
 # ExFS2: Extensible File System 2
 
-ExFS2 is a user-space filesystem implemented in C.  
-It manages a virtual file system inside two segment files (`inode_segment_0.seg` and `data_segment_0.seg`) and supports nested directories, file addition, extraction, removal, and listing — entirely self-contained.
+ExFS2 is a simple user-space filesystem implemented in C.  
+It simulates a filesystem using segment files (`inode_segment_0.seg` and `data_segment_0.seg`) and supports adding, listing, extracting, and removing files inside a virtual directory tree.
 
 ---
 
 ## 🛠 How to Build
 
-First clone or download this repository.
+First, clone or download this repository.
 
 To build the project:
 ```bash
 make
 ```
 
-To clean generated files:
+To clean previous builds and segment files:
 ```bash
 make clean
 ```
@@ -24,78 +24,98 @@ make clean
 
 ## 🚀 How to Run
 
-The executable is `exfs2`. Supported commands:
-
-| Command | Purpose |
-|:-------|:--------|
-| `-a /path/to/add/inside/fs -f hostfile.txt` | Add a file into ExFS2 filesystem |
-| `-l` | List all files and directories inside ExFS2 |
-| `-e /path/to/file.txt` | Extract a file from ExFS2 to stdout |
-| `-r /path/to/file.txt` | Remove a file from ExFS2 filesystem |
-| `-D /path` | Debug a path: print inode info and directory entries |
-
-Example usage:
-
+Basic usage:
 ```bash
-# Add a file
+./exfs2 -a <exfs_path> -f <host_path>    # Add a file
+./exfs2 -l                                # List files and directories
+./exfs2 -e <exfs_path> > <output_file>     # Extract a file
+./exfs2 -r <exfs_path>                    # Remove a file
+./exfs2 -D <exfs_path>                    # Debug a file or directory
+```
+
+Example:
+```bash
+# Create a test file
+echo "Hello ExFS2!" > hello.txt
+
+# Add the file into filesystem under /a/b/c/hello.txt
 ./exfs2 -a /a/b/c/hello.txt -f hello.txt
 
-# List contents
+# List filesystem
 ./exfs2 -l
 
-# Extract file
+# Extract the file back
 ./exfs2 -e /a/b/c/hello.txt > recovered.txt
 
-# Compare
+# Compare original and extracted
 diff hello.txt recovered.txt
 
-# Remove file
-./exfs2 -r /a/b/c/hello.txt
+# Debug directory structure
+./exfs2 -D /
+./exfs2 -D /a/b/c
 
-# Debug a path
-./exfs2 -D /a/b
+# Remove the file
+./exfs2 -r /a/b/c/hello.txt
 ```
 
 ---
 
-## 📂 Project Files
+## 📚 Features
 
-| File | Description |
-|:----|:------------|
-| `exfs2.c` | Main implementation |
-| `Makefile` | Build instructions |
-| `.gitignore` | Ignore binaries, segment files, recovered files |
-
----
-
-## ⚡ How Each Function Works
-
-- `run_add()`: Adds a file to a nested directory. Creates directories if they don't exist.
-- `run_list()`: Recursively lists the directory tree from root.
-- `run_extract()`: Extracts and outputs the file's raw content to stdout.
-- `run_remove()`: Removes a file's inode, data block, and its directory entry.
-- `run_debug()`: Prints inode and directory details for a given path (used for verifying FS structure).
+- ✅ **Segment-based storage** (`inode_segment_0.seg`, `data_segment_0.seg`)
+- ✅ **Directory and file inodes**
+- ✅ **Nested directory creation**
+- ✅ **File addition and extraction**
+- ✅ **Recursive directory listing**
+- ✅ **File removal**
+- ✅ **Debug command (-D)**
+- ✅ **Binary-safe operations (fread/fwrite)**
+- ✅ **Self-contained filesystem** (no dependency on host filesystem beyond segments)
 
 ---
 
-## ⚠️ Known Limitations
+## 📄 Files Included
 
-- Only one inode segment (`inode_segment_0.seg`) and one data segment (`data_segment_0.seg`) are used.
-- No indirect, double, or triple block pointers implemented.
-- Files must fit within one data block (4KB).
-- No dynamic segment expansion yet.
-
----
-
-## 👤 Author
-
-- Puspha Raj Pandeya (Puspha22)
+- `exfs2.c` — Full filesystem source code
+- `Makefile` — Build script
+- `.gitignore` — Clean ignored files
+- `README.md` — (This file)
 
 ---
 
-## 🏁 Final Notes
+## ⚙️ Commands Implemented
 
-ExFS2 can handle nested paths, file operations, and directory management inside a simple simulated filesystem.  
-Designed for educational purposes (CS514, Spring '25).
+| Command     | Description                                  |
+|-------------|----------------------------------------------|
+| `-a`        | Add a file to the filesystem                 |
+| `-l`        | List the contents of the filesystem          |
+| `-e`        | Extract a file from the filesystem           |
+| `-r`        | Remove a file from the filesystem            |
+| `-D`        | Debug: Show detailed info about a path       |
 
-Enjoy exploring it! 🚀
+---
+
+## 🧹 Clean-up Instructions
+
+After testing, you can clean everything with:
+```bash
+make clean
+```
+
+---
+
+## 🙋 Notes
+
+- Large file support (indirect blocks) is **NOT** implemented — only small single-block files are supported (bonus not attempted).
+- Dynamic segment expansion is **NOT** implemented — fixed single segment per inode and data.
+
+---
+
+## 👨‍💻 Author
+
+- **Puspha Raj Pandeya** — 2025  
+- Southern Illinois University Edwardsville (SIUE)
+
+---
+
+✅ Now your project is **buildable**, **runnable**, and **shareable** instantly!

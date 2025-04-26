@@ -1,0 +1,18 @@
+# Ignore compiled binaries
+exfs2
+
+# Ignore segment files created during runtime
+inode_segment_*.seg
+data_segment_*.seg
+
+# Ignore any output files generated during extraction
+recovered.txt
+out.txt
+extract.txt
+
+# Ignore testing and temporary files
+*.hex
+*.txt
+
+# Ignore editor backup files
+*~

@@ -1,0 +1,634 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <unistd.h>
+
+#define BLOCK_SIZE 4096
+#define SEGMENT_SIZE (1024 * 1024)
+#define MAX_NAME_LEN 255
+#define MAX_SEGMENTS 1024
+#define INODES_PER_SEGMENT 256
+#define BLOCKS_PER_SEGMENT 255
+#define DIRECT_BLOCKS 12
+#define MAX_PATH 1024
+#define MAX_PATH_DEPTH 64
+
+#define TYPE_FILE 1
+#define TYPE_DIR  2
+
+typedef struct {
+    uint32_t inode_num;
+    uint8_t name_len;
+    char name[MAX_NAME_LEN + 1];
+} __attribute__((packed)) DirEntry;
+
+typedef struct {
+    uint32_t size;
+    uint16_t type;
+    uint32_t direct[DIRECT_BLOCKS];
+    uint32_t indirect_single;
+    uint32_t indirect_double;
+    uint32_t indirect_triple;
+    char padding[BLOCK_SIZE - sizeof(uint32_t)*(DIRECT_BLOCKS + 4) - sizeof(uint16_t)];
+} __attribute__((packed)) Inode;
+
+FILE *inode_segments[MAX_SEGMENTS];
+FILE *data_segments[MAX_SEGMENTS];
+int num_inode_segments = 0;
+int num_data_segments = 0;
+
+void init_filesystem() {
+    char inode_file[] = "inode_segment_0.seg";
+    inode_segments[0] = fopen(inode_file, "r+b");
+    if (!inode_segments[0]) {
+        inode_segments[0] = fopen(inode_file, "w+b");
+        ftruncate(fileno(inode_segments[0]), SEGMENT_SIZE);
+        fprintf(stderr, "[init] Created inode segment: %s\n", inode_file);
+    }
+    num_inode_segments = 1;
+
+    char data_file[] = "data_segment_0.seg";
+    data_segments[0] = fopen(data_file, "r+b");
+    if (!data_segments[0]) {
+        data_segments[0] = fopen(data_file, "w+b");
+        ftruncate(fileno(data_segments[0]), SEGMENT_SIZE);
+        fprintf(stderr, "[init] Created data segment: %s\n", data_file);
+
+        // Zero out root directory block (block 0)
+        char zero[BLOCK_SIZE] = {0};
+        fseek(data_segments[0], 0, SEEK_SET);
+        fwrite(zero, BLOCK_SIZE, 1, data_segments[0]);
+        fflush(data_segments[0]);
+    }
+    num_data_segments = 1;
+
+    // Initialize root inode (inode 0)
+    fseek(inode_segments[0], 0, SEEK_SET);
+    Inode root;
+    fread(&root, sizeof(Inode), 1, inode_segments[0]);
+    if (root.type != TYPE_DIR) {
+        memset(&root, 0, sizeof(Inode));
+        root.type = TYPE_DIR;
+        root.direct[0] = 0;
+        fseek(inode_segments[0], 0, SEEK_SET);
+        fwrite(&root, sizeof(Inode), 1, inode_segments[0]);
+        fflush(inode_segments[0]);
+        fprintf(stderr, "[init] Creating root inode (inode 0)\n");
+    }
+
+    fprintf(stderr, "[init] Filesystem initialized.\n");
+}
+
+int find_free_inode() {
+    Inode inode;
+    for (int i = 1; i < INODES_PER_SEGMENT; i++) {
+        fseek(inode_segments[0], i * sizeof(Inode), SEEK_SET);
+        fread(&inode, sizeof(Inode), 1, inode_segments[0]);
+        if (inode.type == 0) return i; // type 0 means unused
+    }
+    return -1;
+}
+
+int find_free_block() {
+    Inode inode;
+    char buffer[BLOCK_SIZE];
+
+    for (int b = 1; b < BLOCKS_PER_SEGMENT; ++b) {
+        int used = 0;
+
+        // Check if any inode already points to this block
+        for (int i = 0; i < INODES_PER_SEGMENT; ++i) {
+            fseek(inode_segments[0], i * sizeof(Inode), SEEK_SET);
+            fread(&inode, sizeof(Inode), 1, inode_segments[0]);
+
+            for (int j = 0; j < DIRECT_BLOCKS; ++j) {
+                if (inode.direct[j] == b) {
+                    used = 1;
+                    break;
+                }
+            }
+
+            if (used) break;
+        }
+
+        if (!used) {
+            // Still confirm the block is zeroed
+            fseek(data_segments[0], b * BLOCK_SIZE, SEEK_SET);
+            fread(buffer, BLOCK_SIZE, 1, data_segments[0]);
+
+            for (int j = 0; j < BLOCK_SIZE; ++j) {
+                if (buffer[j] != 0) {
+                    used = 1;
+                    break;
+                }
+            }
+
+            if (!used) return b;
+        }
+    }
+
+    return -1;
+}
+
+
+int find_or_create_path(const char *exfs_path) {
+    uint32_t current_inode_num = 0;
+    char path_copy[MAX_PATH];
+    strncpy(path_copy, exfs_path, MAX_PATH);
+    path_copy[MAX_PATH - 1] = '\0';
+
+    char *tokens[MAX_PATH_DEPTH];
+    int depth = 0;
+    char *token = strtok(path_copy, "/");
+
+    while (token && depth < MAX_PATH_DEPTH - 1) {
+        tokens[depth++] = token;
+        token = strtok(NULL, "/");
+    }
+
+    for (int i = 0; i < depth - 1; ++i) {
+        char *dirname = tokens[i];
+        fprintf(stderr, "[path] Resolving level %d: %s\n", i, dirname);
+
+        Inode dir_inode;
+        fseek(inode_segments[0], current_inode_num * sizeof(Inode), SEEK_SET);
+        fread(&dir_inode, sizeof(Inode), 1, inode_segments[0]);
+
+        char block[BLOCK_SIZE];
+        fseek(data_segments[0], dir_inode.direct[0] * BLOCK_SIZE, SEEK_SET);
+        fread(block, BLOCK_SIZE, 1, data_segments[0]);
+
+        int offset = 0, found = 0;
+        uint32_t next_inode = 0;
+
+        while (offset < BLOCK_SIZE) {
+            DirEntry *entry = (DirEntry *)(block + offset);
+            if (entry->inode_num == 0 || entry->name_len == 0) break;
+
+            if (strncmp(entry->name, dirname, entry->name_len) == 0 &&
+                strlen(dirname) == entry->name_len) {
+                next_inode = entry->inode_num;
+                found = 1;
+                fprintf(stderr, "[path] Found existing dir '%s' at inode %d\n", dirname, next_inode);
+                break;
+            }
+
+            offset += sizeof(uint32_t) + sizeof(uint8_t) + entry->name_len + 1;
+        }
+
+        if (!found) {
+            int new_inode = find_free_inode();
+            int new_block = find_free_block();
+            if (new_inode == -1 || new_block == -1) {
+                fprintf(stderr, "[path] No space to create '%s'\n", dirname);
+                return -1;
+            }
+
+            fprintf(stderr, "[path] Creating new dir '%s' at inode %d, block %d\n", dirname, new_inode, new_block);
+
+            Inode new_dir = {0};
+            new_dir.type = TYPE_DIR;
+            new_dir.direct[0] = new_block;
+            fseek(inode_segments[0], new_inode * sizeof(Inode), SEEK_SET);
+            fwrite(&new_dir, sizeof(Inode), 1, inode_segments[0]);
+            fflush(inode_segments[0]);
+
+            DirEntry entry = {0};
+            entry.inode_num = new_inode;
+            entry.name_len = strlen(dirname);
+            strncpy(entry.name, dirname, MAX_NAME_LEN);
+
+            int insert_offset = 0;
+            while (insert_offset < BLOCK_SIZE) {
+                DirEntry *slot = (DirEntry *)(block + insert_offset);
+                if (slot->inode_num == 0 || slot->name_len == 0) {
+                    memcpy(block + insert_offset, &entry.inode_num, sizeof(uint32_t));
+                    memcpy(block + insert_offset + sizeof(uint32_t), &entry.name_len, sizeof(uint8_t));
+                    strncpy(block + insert_offset + sizeof(uint32_t) + sizeof(uint8_t), entry.name, entry.name_len + 1);
+                    fprintf(stderr, "[path] Inserted dir '%s' at offset %d\n", dirname, insert_offset);
+                    break;
+                }
+                insert_offset += sizeof(uint32_t) + sizeof(uint8_t) + slot->name_len + 1;
+            }
+
+            // ✅ Save updated block back to parent directory
+            fseek(data_segments[0], dir_inode.direct[0] * BLOCK_SIZE, SEEK_SET);
+            fwrite(block, BLOCK_SIZE, 1, data_segments[0]);
+            fflush(data_segments[0]);
+
+            next_inode = new_inode;
+        }
+
+        current_inode_num = next_inode;
+    }
+
+    return current_inode_num;
+}
+
+
+void run_add(const char *exfs_path, const char *host_path) {
+    fprintf(stderr, "[add] Adding '%s' into '%s'\n", host_path, exfs_path);
+
+    const char *filename = strrchr(exfs_path, '/');
+    if (!filename || strlen(filename + 1) == 0) {
+        fprintf(stderr, "[add] Invalid path: missing filename\n");
+        return;
+    }
+    filename++;  // skip '/'
+
+    int parent_inode_num = find_or_create_path(exfs_path);
+    if (parent_inode_num < 0) {
+        fprintf(stderr, "[add] Failed to resolve parent path\n");
+        return;
+    }
+
+    FILE *src = fopen(host_path, "rb");
+    if (!src) {
+        perror("[add] Failed to open host file");
+        return;
+    }
+
+    char buffer[BLOCK_SIZE] = {0};
+    size_t file_size = fread(buffer, 1, BLOCK_SIZE, src);
+    fclose(src);
+
+    // Load parent inode
+    Inode parent;
+    fseek(inode_segments[0], parent_inode_num * sizeof(Inode), SEEK_SET);
+    fread(&parent, sizeof(Inode), 1, inode_segments[0]);
+
+    // Read parent directory block
+    char block[BLOCK_SIZE];
+    fseek(data_segments[0], parent.direct[0] * BLOCK_SIZE, SEEK_SET);
+    fread(block, BLOCK_SIZE, 1, data_segments[0]);
+
+    // Check for existing file with same name
+    int offset = 0;
+    while (offset < BLOCK_SIZE) {
+        DirEntry *entry = (DirEntry *)(block + offset);
+        if (entry->inode_num == 0 || entry->name_len == 0) break;
+
+        if (entry->name_len == strlen(filename) &&
+            strncmp(entry->name, filename, entry->name_len) == 0) {
+            fprintf(stderr, "[add] File '%s' already exists. Skipping.\n", filename);
+            return;
+        }
+
+        offset += sizeof(uint32_t) + sizeof(uint8_t) + entry->name_len + 1;
+    }
+
+    // Allocate new inode and data block
+    int new_inode = find_free_inode();
+    int new_block = find_free_block();
+    if (new_inode < 0 || new_block < 0) {
+        fprintf(stderr, "[add] No space left to allocate file.\n");
+        return;
+    }
+
+    // Zero out new block to mark it used (avoid reuse)
+    char zero[BLOCK_SIZE] = {0};
+    fseek(data_segments[0], new_block * BLOCK_SIZE, SEEK_SET);
+    fwrite(zero, BLOCK_SIZE, 1, data_segments[0]);
+    fflush(data_segments[0]);
+
+    // Write file content
+    fseek(data_segments[0], new_block * BLOCK_SIZE, SEEK_SET);
+    fwrite(buffer, file_size, 1, data_segments[0]);
+    fflush(data_segments[0]);
+
+    Inode new_file = {0};
+    new_file.type = TYPE_FILE;
+    new_file.size = file_size;
+    new_file.direct[0] = new_block;
+    fseek(inode_segments[0], new_inode * sizeof(Inode), SEEK_SET);
+    fwrite(&new_file, sizeof(Inode), 1, inode_segments[0]);
+    fflush(inode_segments[0]);
+
+    // Add directory entry
+    DirEntry entry = {0};
+    entry.inode_num = new_inode;
+    entry.name_len = strlen(filename);
+    strncpy(entry.name, filename, MAX_NAME_LEN);
+
+    fprintf(stderr, "[debug] Writing directory entry at offset %d\n", offset);
+    memcpy(block + offset, &entry.inode_num, sizeof(uint32_t));
+    memcpy(block + offset + sizeof(uint32_t), &entry.name_len, sizeof(uint8_t));
+    strncpy(block + offset + sizeof(uint32_t) + sizeof(uint8_t), entry.name, entry.name_len + 1);
+
+    fseek(data_segments[0], parent.direct[0] * BLOCK_SIZE, SEEK_SET);
+    fwrite(block, BLOCK_SIZE, 1, data_segments[0]);
+    fflush(data_segments[0]);
+
+    fprintf(stderr, "[add] File '%s' added at inode %d, data block %d, size %zu bytes.\n",
+            filename, new_inode, new_block, file_size);
+}
+
+
+void print_directory_recursive(uint32_t inode_num, int depth, uint8_t *visited) {
+    if (inode_num >= INODES_PER_SEGMENT || visited[inode_num]) {
+        fprintf(stderr, "[list-debug] Skipping inode %u (already visited)\n", inode_num);
+        return;
+    }
+
+    visited[inode_num] = 1;
+
+    Inode dir_inode;
+    fseek(inode_segments[0], inode_num * sizeof(Inode), SEEK_SET);
+    fread(&dir_inode, sizeof(Inode), 1, inode_segments[0]);
+
+    if (dir_inode.type != TYPE_DIR || dir_inode.direct[0] >= BLOCKS_PER_SEGMENT)
+        return;
+
+    char block[BLOCK_SIZE];
+    fseek(data_segments[0], dir_inode.direct[0] * BLOCK_SIZE, SEEK_SET);
+    fread(block, BLOCK_SIZE, 1, data_segments[0]);
+
+    int offset = 0;
+    while (offset < BLOCK_SIZE) {
+        DirEntry *entry = (DirEntry *)(block + offset);
+        if (entry->inode_num == 0 || entry->name_len == 0) break;
+
+        for (int i = 0; i < depth; ++i) printf("   ");
+        printf("|- %s\n", entry->name);
+
+        Inode child;
+        fseek(inode_segments[0], entry->inode_num * sizeof(Inode), SEEK_SET);
+        fread(&child, sizeof(Inode), 1, inode_segments[0]);
+
+        if (child.type == TYPE_DIR) {
+            print_directory_recursive(entry->inode_num, depth + 1, visited);
+        }
+
+        offset += sizeof(uint32_t) + sizeof(uint8_t) + entry->name_len + 1;
+    }
+}
+
+
+void run_list() {
+    fprintf(stderr, "[list] Listing file system contents\n");
+    uint8_t visited[INODES_PER_SEGMENT] = {0};
+    print_directory_recursive(0, 0, visited);
+}
+
+
+const char* extract_path_tail(const char *exfs_path, char *parent_out) {
+    strncpy(parent_out, exfs_path, MAX_PATH);
+    parent_out[MAX_PATH - 1] = '\0';
+
+    char *last_slash = strrchr(parent_out, '/');
+    if (!last_slash || *(last_slash + 1) == '\0') {
+        return NULL; // Invalid: no filename
+    }
+
+    const char *filename = last_slash + 1;
+    *last_slash = '\0'; // Trim path to parent
+
+    if (strlen(parent_out) == 0)
+        strcpy(parent_out, "/");
+
+    return filename;
+}
+
+
+int find_inode_by_path(const char *exfs_path) {
+    uint32_t current_inode_num = 0; // start from root
+    char path_copy[MAX_PATH];
+    strncpy(path_copy, exfs_path, MAX_PATH);
+    path_copy[MAX_PATH - 1] = '\0';
+
+    char *tokens[MAX_PATH_DEPTH];
+    int depth = 0;
+
+    char *token = strtok(path_copy, "/");
+    while (token && depth < MAX_PATH_DEPTH - 1) {
+        tokens[depth++] = token;
+        token = strtok(NULL, "/");
+    }
+
+    for (int i = 0; i < depth; ++i) {
+        char *dirname = tokens[i];
+
+        Inode dir_inode;
+        fseek(inode_segments[0], current_inode_num * sizeof(Inode), SEEK_SET);
+        fread(&dir_inode, sizeof(Inode), 1, inode_segments[0]);
+
+        if (dir_inode.type != TYPE_DIR) {
+            fprintf(stderr, "[path] Inode %d is not a directory\n", current_inode_num);
+            return -1;
+        }
+
+        char block[BLOCK_SIZE];
+        fseek(data_segments[0], dir_inode.direct[0] * BLOCK_SIZE, SEEK_SET);
+        fread(block, BLOCK_SIZE, 1, data_segments[0]);
+
+        int offset = 0, found = 0;
+        while (offset < BLOCK_SIZE) {
+            DirEntry *entry = (DirEntry *)(block + offset);
+            if (entry->inode_num == 0 || entry->name_len == 0) break;
+
+            if (strncmp(entry->name, dirname, entry->name_len) == 0 &&
+                strlen(dirname) == entry->name_len) {
+                current_inode_num = entry->inode_num;
+                found = 1;
+                break;
+            }
+
+            offset += sizeof(uint32_t) + sizeof(uint8_t) + entry->name_len + 1;
+        }
+
+        if (!found) {
+            fprintf(stderr, "[path] Directory '%s' not found\n", dirname);
+            return -1;
+        }
+    }
+
+    return current_inode_num;  // ✅ parent directory inode
+}
+
+
+void run_remove(const char *exfs_path) {
+    fprintf(stderr, "[remove] Removing '%s'\n", exfs_path);
+
+    // Split to get parent and file name
+    char path_copy[MAX_PATH];
+    strncpy(path_copy, exfs_path, MAX_PATH);
+    path_copy[MAX_PATH - 1] = '\0';
+
+    char *last_slash = strrchr(path_copy, '/');
+    if (!last_slash || *(last_slash + 1) == '\0') {
+        fprintf(stderr, "[remove] Invalid path: %s\n", exfs_path);
+        return;
+    }
+
+    char *filename = last_slash + 1;
+    *last_slash = '\0'; // truncate to parent path
+
+    int parent_inode = find_inode_by_path(path_copy[0] ? path_copy : "/");
+    if (parent_inode < 0) {
+        fprintf(stderr, "[remove] Parent directory not found\n");
+        return;
+    }
+
+    // Load parent inode
+    Inode parent;
+    fseek(inode_segments[0], parent_inode * sizeof(Inode), SEEK_SET);
+    fread(&parent, sizeof(Inode), 1, inode_segments[0]);
+
+    // Read directory block
+    char block[BLOCK_SIZE];
+    fseek(data_segments[0], parent.direct[0] * BLOCK_SIZE, SEEK_SET);
+    fread(block, BLOCK_SIZE, 1, data_segments[0]);
+
+    int offset = 0, found_offset = -1;
+    uint32_t target_inode = (uint32_t)-1;
+
+    while (offset < BLOCK_SIZE) {
+        DirEntry *entry = (DirEntry *)(block + offset);
+        if (entry->inode_num == 0 || entry->name_len == 0) break;
+
+        if (strncmp(entry->name, filename, entry->name_len) == 0 && strlen(filename) == entry->name_len) {
+            target_inode = entry->inode_num;
+            found_offset = offset;
+            break;
+        }
+
+        offset += sizeof(uint32_t) + sizeof(uint8_t) + entry->name_len + 1;
+    }
+
+    if (target_inode == (uint32_t)-1 || found_offset == -1) {
+        fprintf(stderr, "[remove] File not found in directory\n");
+        return;
+    }
+
+    // Clear DirEntry
+    memset(block + found_offset, 0, sizeof(DirEntry));
+    fseek(data_segments[0], parent.direct[0] * BLOCK_SIZE, SEEK_SET);
+    fwrite(block, BLOCK_SIZE, 1, data_segments[0]);
+    fflush(data_segments[0]);
+
+    // Clear inode and block
+    Inode target;
+    fseek(inode_segments[0], target_inode * sizeof(Inode), SEEK_SET);
+    fread(&target, sizeof(Inode), 1, inode_segments[0]);
+
+    if (target.direct[0] < BLOCKS_PER_SEGMENT) {
+        char zero_block[BLOCK_SIZE] = {0};
+        fseek(data_segments[0], target.direct[0] * BLOCK_SIZE, SEEK_SET);
+        fwrite(zero_block, BLOCK_SIZE, 1, data_segments[0]);
+        fflush(data_segments[0]);
+    }
+
+    Inode empty = {0};
+    fseek(inode_segments[0], target_inode * sizeof(Inode), SEEK_SET);
+    fwrite(&empty, sizeof(Inode), 1, inode_segments[0]);
+    fflush(inode_segments[0]);
+
+    fprintf(stderr, "[remove] File '%s' removed successfully.\n", filename);
+}
+
+
+void run_extract(const char *exfs_path) {
+    fprintf(stderr, "[extract] Extracting '%s'\n", exfs_path);
+
+    char parent_path[MAX_PATH];
+    const char *filename = extract_path_tail(exfs_path, parent_path);
+    if (!filename || strlen(filename) == 0) {
+        fprintf(stderr, "[extract] Invalid path (missing filename)\n");
+        return;
+    }
+
+    // FIX: ensure root works too
+    int parent_inode = find_inode_by_path(parent_path[0] ? parent_path : "/");
+    if (parent_inode < 0) {
+        fprintf(stderr, "[extract] Parent directory '%s' not found\n", parent_path);
+        return;
+    }
+
+    // Load parent inode
+    Inode parent;
+    fseek(inode_segments[0], parent_inode * sizeof(Inode), SEEK_SET);
+    fread(&parent, sizeof(Inode), 1, inode_segments[0]);
+
+    // Read directory block
+    char block[BLOCK_SIZE];
+    fseek(data_segments[0], parent.direct[0] * BLOCK_SIZE, SEEK_SET);
+    fread(block, BLOCK_SIZE, 1, data_segments[0]);
+
+    fprintf(stderr, "[extract-debug] Directory block scan in '%s' looking for '%s':\n", parent_path, filename);
+
+    uint32_t found_inode = (uint32_t)-1;
+    int offset = 0;
+
+    while (offset < BLOCK_SIZE) {
+        DirEntry *entry = (DirEntry *)(block + offset);
+        if (entry->inode_num == 0 || entry->name_len == 0) break;
+
+        fprintf(stderr, "  Entry: inode=%u, name_len=%u, name='%.*s'\n",
+                entry->inode_num, entry->name_len, entry->name_len, entry->name);
+
+        if (entry->name_len == strlen(filename) &&
+            strncmp(entry->name, filename, entry->name_len) == 0) {
+            found_inode = entry->inode_num;
+            break;
+        }
+
+        offset += sizeof(uint32_t) + sizeof(uint8_t) + entry->name_len + 1;
+    }
+
+    if (found_inode == (uint32_t)-1) {
+        fprintf(stderr, "[extract] File '%s' not found in directory '%s'\n", filename, parent_path);
+        return;
+    }
+
+    // Load the file inode
+    Inode file_inode;
+    fseek(inode_segments[0], found_inode * sizeof(Inode), SEEK_SET);
+    fread(&file_inode, sizeof(Inode), 1, inode_segments[0]);
+
+    if (file_inode.type != TYPE_FILE) {
+        fprintf(stderr, "[extract] '%s' is not a regular file\n", filename);
+        return;
+    }
+
+    char file_data[BLOCK_SIZE] = {0};
+    fseek(data_segments[0], file_inode.direct[0] * BLOCK_SIZE, SEEK_SET);
+    fread(file_data, 1, file_inode.size, data_segments[0]);
+
+    fprintf(stderr, "[extract-debug] Extracting %u bytes from block %u (inode %u)\n",
+            file_inode.size, file_inode.direct[0], found_inode);
+
+    fwrite(file_data, 1, file_inode.size, stdout);
+}
+
+
+void run_debug(const char *exfs_path) {
+    printf("[debug] Debugging '%s' (not yet implemented)\n", exfs_path);
+}
+
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s -[a|l|r|e|D] ...\n", argv[0]);
+        exit(1);
+    }
+
+    init_filesystem();
+
+    if (strcmp(argv[1], "-a") == 0 && argc == 5 && strcmp(argv[3], "-f") == 0) {
+        run_add(argv[2], argv[4]);
+    } else if (strcmp(argv[1], "-l") == 0) {
+        run_list();
+    } else if (strcmp(argv[1], "-r") == 0 && argc == 3) {
+        run_remove(argv[2]);
+    } else if (strcmp(argv[1], "-e") == 0 && argc == 3) {
+        run_extract(argv[2]);
+    } else if (strcmp(argv[1], "-D") == 0 && argc == 3) {
+        run_debug(argv[2]);
+    } else {
+        fprintf(stderr, "Invalid usage.\n");
+        exit(1);
+    }
+
+    return 0;
+}
+

@@ -1,7 +1,8 @@
+
 # ExFS2: Extensible File System 2
 
-ExFS2 is a simple user-space filesystem implemented in C.  
-It simulates a filesystem using segment files (`inode_segment_0.seg` and `data_segment_0.seg`) and supports adding, listing, extracting, and removing files inside a virtual directory tree.
+ExFS2 is a user-space filesystem implemented in C.  
+It manages a virtual file system inside two segment files (`inode_segment_0.seg` and `data_segment_0.seg`) and supports nested directories, file addition, extraction, removal, and listing — entirely self-contained.
 
 ---
 
@@ -14,7 +15,7 @@ To build the project:
 make
 ```
 
-To clean the project:
+To clean generated files:
 ```bash
 make clean
 ```
@@ -23,110 +24,78 @@ make clean
 
 ## 🚀 How to Run
 
-### 1. Create a sample file
-```bash
-echo "Hello Nested FS!" > hello.txt
-```
+The executable is `exfs2`. Supported commands:
 
-### 2. Add a file to the virtual filesystem
+| Command | Purpose |
+|:-------|:--------|
+| `-a /path/to/add/inside/fs -f hostfile.txt` | Add a file into ExFS2 filesystem |
+| `-l` | List all files and directories inside ExFS2 |
+| `-e /path/to/file.txt` | Extract a file from ExFS2 to stdout |
+| `-r /path/to/file.txt` | Remove a file from ExFS2 filesystem |
+| `-D /path` | Debug a path: print inode info and directory entries |
+
+Example usage:
+
 ```bash
+# Add a file
 ./exfs2 -a /a/b/c/hello.txt -f hello.txt
-```
 
-### 3. List all files
-```bash
+# List contents
 ./exfs2 -l
-```
-Example output:
-```
-|- a
-   |- b
-      |- c
-         |- hello.txt
-```
 
-### 4. Extract a file from the filesystem
-```bash
+# Extract file
 ./exfs2 -e /a/b/c/hello.txt > recovered.txt
-```
 
-### 5. Compare original and recovered file
-```bash
+# Compare
 diff hello.txt recovered.txt
-```
-- If there's no output, the files are identical ✅.
 
-### 6. Remove a file
-```bash
+# Remove file
 ./exfs2 -r /a/b/c/hello.txt
+
+# Debug a path
+./exfs2 -D /a/b
 ```
 
 ---
 
 ## 📂 Project Files
 
-| File                | Purpose                                 |
-|---------------------|-----------------------------------------|
-| `exfs2.c`            | Main C code implementing ExFS2         |
-| `Makefile`           | Makefile to build and clean the project |
-| `.gitignore`         | To ignore segment and binary files     |
-| `inode_segment_0.seg`| Segment file storing inodes (auto-created) |
-| `data_segment_0.seg` | Segment file storing file data (auto-created) |
+| File | Description |
+|:----|:------------|
+| `exfs2.c` | Main implementation |
+| `Makefile` | Build instructions |
+| `.gitignore` | Ignore binaries, segment files, recovered files |
 
 ---
 
-## 📚 Explanation of Major Functions
+## ⚡ How Each Function Works
 
-- `run_add(path, file)`:
-  - Adds a file into ExFS2, creating directories as needed.
-
-- `run_list()`:
-  - Recursively lists the filesystem tree starting from root.
-
-- `run_extract(path)`:
-  - Extracts a file's contents to stdout (can redirect to a file).
-
-- `run_remove(path)`:
-  - Removes a file and reclaims its inode and block.
-
-- `init_filesystem()`:
-  - Initializes or loads the segment files and root inode.
+- `run_add()`: Adds a file to a nested directory. Creates directories if they don't exist.
+- `run_list()`: Recursively lists the directory tree from root.
+- `run_extract()`: Extracts and outputs the file's raw content to stdout.
+- `run_remove()`: Removes a file's inode, data block, and its directory entry.
+- `run_debug()`: Prints inode and directory details for a given path (used for verifying FS structure).
 
 ---
 
-## 📜 How to Test Everything
+## ⚠️ Known Limitations
 
-Here’s a complete test flow:
-```bash
-make
-echo "Hello Nested FS!" > hello.txt
-./exfs2 -a /a/b/c/hello.txt -f hello.txt
-./exfs2 -l
-./exfs2 -e /a/b/c/hello.txt > recovered.txt
-diff hello.txt recovered.txt
-./exfs2 -r /a/b/c/hello.txt
-./exfs2 -l
-make clean
-```
+- Only one inode segment (`inode_segment_0.seg`) and one data segment (`data_segment_0.seg`) are used.
+- No indirect, double, or triple block pointers implemented.
+- Files must fit within one data block (4KB).
+- No dynamic segment expansion yet.
 
 ---
 
-## 📎 Requirements
+## 👤 Author
 
-- Linux, WSL, or compatible UNIX environment
-- `gcc` (C compiler)
-- `make` (build tool)
+- Puspha Raj Pandeya (Puspha22)
 
 ---
 
-## 📖 Notes
+## 🏁 Final Notes
 
-- No need to manually create directories — ExFS2 will auto-create nested directories when adding a file.
-- The recovered files should match the original exactly after extraction.
-- Segment files are created automatically during the first add.
+ExFS2 can handle nested paths, file operations, and directory management inside a simple simulated filesystem.  
+Designed for educational purposes (CS514, Spring '25).
 
----
-
-## 📜 License
-
-Educational use only (CS514 Spring 2025 Assignment).  
+Enjoy exploring it! 🚀

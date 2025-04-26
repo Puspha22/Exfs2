@@ -603,8 +603,48 @@ void run_extract(const char *exfs_path) {
 
 
 void run_debug(const char *exfs_path) {
-    printf("[debug] Debugging '%s' (not yet implemented)\n", exfs_path);
+    fprintf(stderr, "[debug] Debugging '%s'\n", exfs_path);
+
+    int inode_num = find_inode_by_path(exfs_path);
+    if (inode_num < 0) {
+        fprintf(stderr, "[debug] Path '%s' not found.\n", exfs_path);
+        return;
+    }
+
+    Inode inode;
+    fseek(inode_segments[0], inode_num * sizeof(Inode), SEEK_SET);
+    fread(&inode, sizeof(Inode), 1, inode_segments[0]);
+
+    printf("Inode %d Info:\n", inode_num);
+    printf("  Type : %s\n", (inode.type == TYPE_DIR) ? "Directory" : (inode.type == TYPE_FILE) ? "File" : "Unknown");
+    printf("  Size : %u bytes\n", inode.size);
+
+    printf("  Direct blocks:\n");
+    for (int i = 0; i < DIRECT_BLOCKS; i++) {
+        if (inode.direct[i]) {
+            printf("    [%d] -> Block %u\n", i, inode.direct[i]);
+        }
+    }
+
+    if (inode.type == TYPE_DIR) {
+        printf("Directory Entries:\n");
+
+        char block[BLOCK_SIZE];
+        fseek(data_segments[0], inode.direct[0] * BLOCK_SIZE, SEEK_SET);
+        fread(block, BLOCK_SIZE, 1, data_segments[0]);
+
+        int offset = 0;
+        while (offset < BLOCK_SIZE) {
+            DirEntry *entry = (DirEntry *)(block + offset);
+            if (entry->inode_num == 0 || entry->name_len == 0) break;
+
+            printf("  - '%s' (inode %u)\n", entry->name, entry->inode_num);
+
+            offset += sizeof(uint32_t) + sizeof(uint8_t) + entry->name_len + 1;
+        }
+    }
 }
+
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {

@@ -1,27 +1,27 @@
-# Ignore compiled binaries
+
+# Compiled binary
 exfs2
 
-# Ignore segment files
+# Object files
+*.o
+
+# Segment files
 inode_segment_*.seg
 data_segment_*.seg
 
-# Ignore extracted recovered files
-recovered.txt
-
-# Ignore test files
-hello.txt
-test.txt
-*.txt
-
-# Ignore hex dumps
+# Temporary/test/generated files
+*.bin
 *.hex
-
-# Ignore object files
-*.o
-
-# Ignore editor temp files
-*~
+*.txt
+*.log
+*.tmp
 *.swp
+recovered_*
 
-# Ignore Makefile backup
-Makefile~
+# Backup files
+*~
+*.bak
+
+# Editor folders
+.vscode/
+.idea/

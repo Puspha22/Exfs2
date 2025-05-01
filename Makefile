@@ -1,18 +1,27 @@
-# Makefile for ExFS2
-
+# Compiler and flags
 CC = gcc
-CFLAGS = -Wall -Wextra -g
+CFLAGS = -Wall -Wextra -Wno-sign-compare -g
 TARGET = exfs2
-SRC = exfs2.c
+
+# Source and object files
+SRCS = main.c init.c add.c extract.c remove.c debug.c helpers.c path.c
+OBJS = $(SRCS:.c=.o)
 
 .PHONY: all clean
 
-# Default rule to build
+# Default target to build everything
 all: $(TARGET)
 
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $(TARGET) $(SRC)
+# Link object files into final executable
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $^
 
-# Clean build artifacts and segment files
+# Compile each source file into an object file
+%.o: %.c exfs2.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Clean up build and segment artifacts
 clean:
-	rm -f $(TARGET) *.o inode_segment_*.seg data_segment_*.seg recovered.txt hello.txt *.hex test.txt
+	rm -f $(TARGET) *.o
+	rm -f inode_segment_*.seg data_segment_*.seg
+	rm -f recovered_*.bin *.bin *.hex *.txt

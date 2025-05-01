@@ -1,121 +1,106 @@
 
 # ExFS2: Extensible File System 2
 
-ExFS2 is a simple user-space filesystem implemented in C.  
-It simulates a filesystem using segment files (`inode_segment_0.seg` and `data_segment_0.seg`) and supports adding, listing, extracting, and removing files inside a virtual directory tree.
+ExFS2 is a user-space file system implemented in C that simulates a basic block-based file system using flat segment files.
 
----
+## ✅ Features Implemented
 
-## 🛠 How to Build
+- [x] Add file (`-a`)
+- [x] Extract file (`-e`)
+- [x] Remove file (`-r`)
+- [x] List all files (`-l`)
+- [x] Debug file/directory (`-D`)
+- [x] Nested directories and path resolution
+- [x] Direct, single indirect, and double indirect block handling
+- [ ] Triple indirect blocks (**not implemented** - not required per project spec)
 
-First, clone or download this repository.
+## 🗂 Segment Design
 
-To build the project:
+- Inode Segment: `inode_segment_*.seg` (256 inodes per segment)
+- Data Segment: `data_segment_*.seg` (256 blocks per segment)
+- Block size: 4KB, Segment size: 1MB
+
+## ⚙️ Build Instructions
+
 ```bash
-make
+make clean    # Clean up all build files and segments
+make          # Compile all sources
 ```
 
-To clean previous builds and segment files:
+## 🚀 Usage Instructions
+
+### Initialize filesystem
 ```bash
-make clean
+./exfs2 -i
 ```
 
----
-
-## 🚀 How to Run
-
-Basic usage:
+### Add a file
 ```bash
-./exfs2 -a <exfs_path> -f <host_path>    # Add a file
-./exfs2 -l                                # List files and directories
-./exfs2 -e <exfs_path> > <output_file>     # Extract a file
-./exfs2 -r <exfs_path>                    # Remove a file
-./exfs2 -D <exfs_path>                    # Debug a file or directory
+./exfs2 -a /vault/file.txt -f file.txt
 ```
 
-Example:
+### Extract a file
 ```bash
-# Create a test file
-echo "Hello ExFS2!" > hello.txt
+./exfs2 -e /vault/file.txt > recovered.txt
+```
 
-# Add the file into filesystem under /a/b/c/hello.txt
-./exfs2 -a /a/b/c/hello.txt -f hello.txt
+### Remove a file
+```bash
+./exfs2 -r /vault/file.txt
+```
 
-# List filesystem
+### List all files and directories
+```bash
 ./exfs2 -l
-
-# Extract the file back
-./exfs2 -e /a/b/c/hello.txt > recovered.txt
-
-# Compare original and extracted
-diff hello.txt recovered.txt
-
-# Debug directory structure
-./exfs2 -D /
-./exfs2 -D /a/b/c
-
-# Remove the file
-./exfs2 -r /a/b/c/hello.txt
 ```
 
----
-
-## 📚 Features
-
-- ✅ **Segment-based storage** (`inode_segment_0.seg`, `data_segment_0.seg`)
-- ✅ **Directory and file inodes**
-- ✅ **Nested directory creation**
-- ✅ **File addition and extraction**
-- ✅ **Recursive directory listing**
-- ✅ **File removal**
-- ✅ **Debug command (-D)**
-- ✅ **Binary-safe operations (fread/fwrite)**
-- ✅ **Self-contained filesystem** (no dependency on host filesystem beyond segments)
-
----
-
-## 📄 Files Included
-
-- `exfs2.c` — Full filesystem source code
-- `Makefile` — Build script
-- `.gitignore` — Clean ignored files
-- `README.md` — (This file)
-
----
-
-## ⚙️ Commands Implemented
-
-| Command     | Description                                  |
-|-------------|----------------------------------------------|
-| `-a`        | Add a file to the filesystem                 |
-| `-l`        | List the contents of the filesystem          |
-| `-e`        | Extract a file from the filesystem           |
-| `-r`        | Remove a file from the filesystem            |
-| `-D`        | Debug: Show detailed info about a path       |
-
----
-
-## 🧹 Clean-up Instructions
-
-After testing, you can clean everything with:
+### Debug a file or directory
 ```bash
-make clean
+./exfs2 -D /vault/file.txt
 ```
 
+## 🔍 Verifying Output
+To confirm the file was extracted correctly:
+```bash
+cmp file.txt recovered.txt
+```
+
+## 🧪 File Generation Tips
+
+To create test files (optional):
+
+```bash
+# Create a small text file
+echo "hello world" > hello.txt
+
+# Create a 3MB binary file (direct + single indirect)
+dd if=/dev/urandom of=bigfile.bin bs=1K count=3000
+
+# Create a ~6MB binary file (should trigger double indirect)
+dd if=/dev/urandom of=hugefile.bin bs=1K count=6000
+```
+
+## 📁 Project Structure
+
+```
+add.c         - Add file logic
+extract.c     - Extract file logic
+remove.c      - Remove file logic
+debug.c       - Debug information printer
+helpers.c     - Common utilities (block mapping, directory entry)
+init.c        - Filesystem initialization
+main.c        - CLI parser/dispatcher
+path.c        - Path resolution, traversal, mkdir-like support
+exfs2.h       - Shared structs and constants
+Makefile      - Build rules
+```
+
+## 🚫 Not Implemented
+
+- Triple indirect block support (not required)
+- File overwrite/update functionality
+
 ---
 
-## 🙋 Notes
-
-- Large file support (indirect blocks) is **NOT** implemented — only small single-block files are supported (bonus not attempted).
-- Dynamic segment expansion is **NOT** implemented — fixed single segment per inode and data.
-
----
-
-## 👨‍💻 Author
-
-- **Puspha Raj Pandeya** — 2025  
-- Southern Illinois University Edwardsville (SIUE)
-
----
-
-✅ Now your project is **buildable**, **runnable**, and **shareable** instantly!
+**Author:** Puspha Raj Pandeya  
+**Note:** This project is for CS514 assignment. Triple indirect support was discussed but not required per final specification.
